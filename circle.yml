@@ -1,3 +1,4 @@
 test:
   override:
     - make test
+    - make bench
