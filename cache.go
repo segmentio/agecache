@@ -1,10 +1,11 @@
 package agecache
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/hashicorp/golang-lru"
+	"github.com/hashicorp/golang-lru/simplelru"
 )
 
 // Stats hold cache statistics.
@@ -28,7 +29,8 @@ type entry struct {
 
 // LRU implements a thread-safe fixed size LRU cache.
 type Cache struct {
-	lru    *lru.Cache
+	lru    *simplelru.LRU
+	mu     sync.Mutex
 	maxAge time.Duration
 	stats  Stats
 }
@@ -36,7 +38,7 @@ type Cache struct {
 // New constructs an LRU of the given size and max age to return
 // results for
 func New(size int, maxAge time.Duration) (*Cache, error) {
-	l, err := lru.New(size)
+	l, err := simplelru.NewLRU(size, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -45,11 +47,15 @@ func New(size int, maxAge time.Duration) (*Cache, error) {
 		lru:    l,
 		maxAge: maxAge,
 	}
+
 	return c, nil
 }
 
 // Add adds an additional key/value pair to our cache.
 func (c *Cache) Add(key, value interface{}) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	return c.lru.Add(key, entry{
 		value:   value,
 		created: time.Now(),
@@ -60,15 +66,18 @@ func (c *Cache) Add(key, value interface{}) bool {
 //
 // The boolean value reports if the value was found.
 func (c *Cache) Get(key interface{}) (interface{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	val, ok := c.lru.Get(key)
 	if !ok {
-		atomic.AddInt64(&c.stats.Misses, 1)
+		c.stats.Misses++
 		return nil, ok
 	}
 
 	e := val.(entry)
 	if time.Since(e.created) <= c.maxAge {
-		atomic.AddInt64(&c.stats.Hits, 1)
+		c.stats.Hits++
 		return e.value, true
 	}
 
