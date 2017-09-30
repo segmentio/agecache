@@ -1,12 +1,26 @@
-
 # agecache
 
-Creates an LRU cache with a set max age. The main difference between
-this and a simple LRU cache is that it will make sure to age out old entries.
+Thread-safe LRU cache supporting max age and expiration. Supports cache
+statistics, as well as eviction and expiration callbacks. Differs from
+some implementations in that OnEviction is only invoked when an entry
+is removed as a result of the LRU eviction policy - not when you explicitly
+delete it or when it expires. OnExpiration is available and invoked when an
+item expires. Expiration is passively enforced when performing a Get.
 
-The Agecache doesn't aim to be thread-safe (though the underlying
-implementation is). Instead, it aims to give fast access, maintaining the
-most recently used items, but expiring them after a certain time.
+``` go
+cache := agecache.New(agecache.Config{
+	Capacity: 100,
+	MaxAge:   time.Hour,
+	OnExpiration: func(key, value interface{}) {
+		// Handle expiration
+	},
+	OnEviction: func(key, value interface{}) {
+		// Handle eviction
+	},
+})
+
+cache.Set("foo", "bar")
+```
 
 ## Documentation
 

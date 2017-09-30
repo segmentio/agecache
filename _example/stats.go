@@ -2,32 +2,31 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/segmentio/agecache"
 )
 
 func main() {
-	c, err := agecache.New(100, time.Second)
-	if err != nil {
-		log.Fatalf("new: %s", err)
-	}
+	cache := agecache.New(agecache.Config{
+		Capacity: 100,
+		MaxAge:   time.Second,
+	})
 
-	c.Add("a", "1")
+	cache.Set("a", "1")
 
-	prev := c.Stats()
+	prev := cache.Stats()
 	tick := time.Tick(time.Millisecond * 100)
 
 	for range tick {
-		c.Get("a") // hit
-		c.Get("b") // miss
-		c.Get("a") // hit
+		cache.Get("a") // hit
+		cache.Get("b") // miss
+		cache.Get("a") // hit
 
-		stats := c.Stats().Sub(prev)
+		stats := cache.Stats().Delta(prev)
 		fmt.Println("hits", stats.Hits)
 		fmt.Println("misses", stats.Misses)
 
-		prev = c.Stats()
+		prev = cache.Stats()
 	}
 }
