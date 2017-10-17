@@ -138,6 +138,32 @@ func TestRemove(t *testing.T) {
 	assert.Nil(t, val)
 }
 
+func TestEvictOldest(t *testing.T) {
+	var eviction bool
+
+	cache := New(Config{
+		Capacity: 1,
+		OnEviction: func(key, value interface{}) {
+			eviction = true
+		},
+	})
+
+	cache.Set("foo", "bar")
+	ok := cache.EvictOldest()
+
+	assert.True(t, ok)
+	assert.True(t, eviction)
+
+	val, ok := cache.Get("foo")
+	assert.False(t, ok)
+	assert.Nil(t, val)
+
+	eviction = false
+	ok = cache.EvictOldest()
+	assert.False(t, ok)
+	assert.False(t, eviction)
+}
+
 func TestLen(t *testing.T) {
 	cache := New(Config{Capacity: 10})
 	for i := 0; i <= 9; i++ {
@@ -201,6 +227,38 @@ func TestSetMaxAge(t *testing.T) {
 
 	err = cache.SetMaxAge(time.Second)
 	assert.NoError(t, err)
+}
+
+func TestOnEviction(t *testing.T) {
+	var eviction bool
+
+	cache := New(Config{Capacity: 1})
+	cache.OnEviction(func(key, value interface{}) {
+		eviction = true
+	})
+
+	cache.Set("foo", 1)
+	cache.Set("bar", 2)
+
+	assert.True(t, eviction)
+}
+
+func TestOnExpiration(t *testing.T) {
+	var expiration bool
+
+	cache := New(Config{
+		Capacity: 1,
+		MaxAge:   time.Millisecond,
+	})
+	cache.OnExpiration(func(key, value interface{}) {
+		expiration = true
+	})
+
+	cache.Set("foo", 1)
+	<-time.After(time.Millisecond * 2)
+	cache.Get("foo")
+
+	assert.True(t, expiration)
 }
 
 func TestStats(t *testing.T) {

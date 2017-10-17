@@ -193,6 +193,16 @@ func (cache *Cache) Remove(key interface{}) bool {
 	return false
 }
 
+// EvictOldest removes the oldest item from the cache, while also invoking any
+// eviction callback. A bool is returned indicating whether or not an item was
+// removed
+func (cache *Cache) EvictOldest() bool {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	return cache.evictOldest()
+}
+
 // Len returns the number of items in the cache.
 func (cache *Cache) Len() int {
 	cache.mutex.RLock()
@@ -259,6 +269,22 @@ func (cache *Cache) SetMaxAge(maxAge time.Duration) error {
 	return nil
 }
 
+// OnEviction sets the eviction callback.
+func (cache *Cache) OnEviction(callback func(key, value interface{})) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	cache.onEviction = callback
+}
+
+// OnExpiration sets the expiration callback.
+func (cache *Cache) OnExpiration(callback func(key, value interface{})) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	cache.onExpiration = callback
+}
+
 // Stats returns cache stats.
 func (cache *Cache) Stats() Stats {
 	cache.mutex.RLock()
@@ -275,10 +301,10 @@ func (cache *Cache) Stats() Stats {
 	}
 }
 
-func (cache *Cache) evictOldest() {
+func (cache *Cache) evictOldest() bool {
 	element := cache.evictionList.Back()
 	if element == nil {
-		return
+		return false
 	}
 
 	cache.evictions++
@@ -286,6 +312,7 @@ func (cache *Cache) evictOldest() {
 	if cache.onEviction != nil {
 		cache.onEviction(entry.key, entry.value)
 	}
+	return true
 }
 
 func (cache *Cache) deleteElement(element *list.Element) *cacheEntry {
