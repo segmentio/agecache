@@ -261,6 +261,27 @@ func TestOnExpiration(t *testing.T) {
 	assert.True(t, expiration)
 }
 
+func TestActiveExpiration(t *testing.T) {
+	invoked := make(chan bool)
+
+	cache := New(Config{
+		Capacity:       1,
+		MaxAge:         time.Millisecond,
+		ExpirationType: ActiveExpiration,
+	})
+
+	cache.OnExpiration(func(key, value interface{}) {
+		invoked <- true
+	})
+
+	cache.Set("foo", 1)
+	start := time.Now()
+	<-invoked
+	duration := time.Now().Sub(start)
+
+	assert.True(t, duration < time.Millisecond*2)
+}
+
 func TestStats(t *testing.T) {
 	t.Run("reports capacity", func(t *testing.T) {
 		cache := New(Config{Capacity: 100})
