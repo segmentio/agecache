@@ -33,12 +33,24 @@ func (stats Stats) Delta(previous Stats) Stats {
 	}
 }
 
+type ExpirationType int
+
+const (
+	PassiveExpration ExpirationType = iota
+	ActiveExpiration
+)
+
 // Configuration for the Cache.
 type Config struct {
 	// Maximum number of items in the cache
 	Capacity int
 	// Optional duration before an item expires. If zero, expiration is disabled
 	MaxAge time.Duration
+	// Type of key expiration: Passive or Active
+	ExpirationType ExpirationType
+	// For active expiration, how often to iterate over the keyspace. Defaults
+	// to the MaxAge
+	ExpirationInterval time.Duration
 	// Optional callback invoked when an item is evicted due to the LRU policy
 	OnEviction func(key, value interface{})
 	// Optional callback invoked when an item expired
@@ -55,10 +67,12 @@ type cacheEntry struct {
 // LRU implements a thread-safe fixed-capacity LRU cache.
 type Cache struct {
 	// Fields defined by configuration
-	capacity     int
-	maxAge       time.Duration
-	onEviction   func(key, value interface{})
-	onExpiration func(key, value interface{})
+	capacity           int
+	maxAge             time.Duration
+	expirationType     ExpirationType
+	expirationInterval time.Duration
+	onEviction         func(key, value interface{})
+	onExpiration       func(key, value interface{})
 
 	// Cache statistics
 	sets      int64
@@ -85,13 +99,28 @@ func New(config Config) *Cache {
 		panic("Must supply a zero or positive config.MaxAge")
 	}
 
+	interval := config.ExpirationInterval
+	if interval <= 0 {
+		interval = config.MaxAge
+	}
+
 	cache := &Cache{
-		capacity:     config.Capacity,
-		maxAge:       config.MaxAge,
-		onEviction:   config.OnEviction,
-		onExpiration: config.OnExpiration,
-		items:        make(map[interface{}]*list.Element),
-		evictionList: list.New(),
+		capacity:           config.Capacity,
+		maxAge:             config.MaxAge,
+		expirationType:     config.ExpirationType,
+		expirationInterval: interval,
+		onEviction:         config.OnEviction,
+		onExpiration:       config.OnExpiration,
+		items:              make(map[interface{}]*list.Element),
+		evictionList:       list.New(),
+	}
+
+	if config.ExpirationType == ActiveExpiration && interval > 0 {
+		go func() {
+			for range time.Tick(interval) {
+				cache.deleteExpired()
+			}
+		}()
 	}
 
 	return cache
@@ -298,6 +327,26 @@ func (cache *Cache) Stats() Stats {
 		Hits:      cache.hits,
 		Misses:    cache.misses,
 		Evictions: cache.evictions,
+	}
+}
+
+func (cache *Cache) deleteExpired() {
+	keys := cache.Keys()
+
+	for i, _ := range keys {
+		cache.mutex.Lock()
+
+		if element, ok := cache.items[keys[i]]; ok {
+			entry := element.Value.(*cacheEntry)
+			if cache.maxAge > 0 && time.Since(entry.created) > cache.maxAge {
+				cache.deleteElement(element)
+				if cache.onExpiration != nil {
+					cache.onExpiration(entry.key, entry.value)
+				}
+			}
+		}
+
+		cache.mutex.Unlock()
 	}
 }
 
