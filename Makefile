@@ -1,6 +1,6 @@
 
 test:
-	go test ./... -race -cover
+	go test ./... -v -race -cover
 
 bench:
 	go test --bench=. --benchmem

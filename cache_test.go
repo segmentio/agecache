@@ -15,11 +15,22 @@ func TestInvalidCapacity(t *testing.T) {
 }
 
 func TestInvalidMaxAge(t *testing.T) {
-	maxAge, err := time.ParseDuration("-1h")
-	assert.Nil(t, err)
+	assert.Panics(t, func() {
+		New(Config{Capacity: 1, MaxAge: -1 * time.Hour})
+	})
+}
+
+func TestInvalidMinAge(t *testing.T) {
+	assert.Panics(t, func() {
+		New(Config{Capacity: 1, MinAge: -1 * time.Hour})
+	})
 
 	assert.Panics(t, func() {
-		New(Config{Capacity: 1, MaxAge: maxAge})
+		New(Config{
+			Capacity: 1,
+			MaxAge:   time.Hour,
+			MinAge:   2 * time.Hour,
+		})
 	})
 }
 
@@ -96,6 +107,33 @@ func TestExpiration(t *testing.T) {
 	assert.Equal(t, "foo", k)
 	assert.Equal(t, 1, v)
 	assert.False(t, eviction)
+}
+
+type MockRandGenerator struct{}
+
+func (mock *MockRandGenerator) Intn(n int) int {
+	// Always return max value
+	return n
+}
+
+func TestJitter(t *testing.T) {
+	cache := New(Config{
+		Capacity: 1,
+		MaxAge:   time.Millisecond * 3,
+		MinAge:   time.Millisecond,
+	})
+
+	cache.rand = &MockRandGenerator{}
+
+	cache.Set("foo", "bar")
+
+	<-time.After(time.Millisecond * 2)
+	_, ok := cache.Get("foo")
+	assert.True(t, ok)
+
+	<-time.After(time.Millisecond * 3)
+	_, ok = cache.Get("foo")
+	assert.False(t, ok)
 }
 
 func TestHas(t *testing.T) {
@@ -218,14 +256,20 @@ func TestOrderedKeys(t *testing.T) {
 }
 
 func TestSetMaxAge(t *testing.T) {
-	invalid, err := time.ParseDuration("-1h")
-	assert.Nil(t, err)
-
 	cache := New(Config{Capacity: 10})
-	err = cache.SetMaxAge(invalid)
+	err := cache.SetMaxAge(-1 * time.Hour)
 	assert.Error(t, err)
 
 	err = cache.SetMaxAge(time.Second)
+	assert.NoError(t, err)
+}
+
+func TestSetMinAge(t *testing.T) {
+	cache := New(Config{Capacity: 10, MaxAge: time.Hour})
+	err := cache.SetMinAge(-1 * time.Hour)
+	assert.Error(t, err)
+
+	err = cache.SetMinAge(time.Second)
 	assert.NoError(t, err)
 }
 
