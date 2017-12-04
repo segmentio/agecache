@@ -4,6 +4,7 @@ package agecache
 import (
 	"container/list"
 	"errors"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -33,6 +34,10 @@ func (stats Stats) Delta(previous Stats) Stats {
 	}
 }
 
+type RandGenerator interface {
+	Intn(n int) int
+}
+
 type ExpirationType int
 
 const (
@@ -44,8 +49,13 @@ const (
 type Config struct {
 	// Maximum number of items in the cache
 	Capacity int
-	// Optional duration before an item expires. If zero, expiration is disabled
+	// Optional max duration before an item expires. Must be greater than or
+	// equal to MinAge. If zero, expiration is disabled.
 	MaxAge time.Duration
+	// Optional min duration before an item expires. Must be less than or equal
+	// to MaxAge. When less than MaxAge, uniformly distributed random jitter is
+	// added to the expiration time. If equal or zero, jitter is disabled.
+	MinAge time.Duration
 	// Type of key expiration: Passive or Active
 	ExpirationType ExpirationType
 	// For active expiration, how often to iterate over the keyspace. Defaults
@@ -59,15 +69,16 @@ type Config struct {
 
 // Entry pointed to by each list.Element
 type cacheEntry struct {
-	key     interface{}
-	value   interface{}
-	created time.Time
+	key       interface{}
+	value     interface{}
+	timestamp time.Time
 }
 
 // LRU implements a thread-safe fixed-capacity LRU cache.
 type Cache struct {
 	// Fields defined by configuration
 	capacity           int
+	minAge             time.Duration
 	maxAge             time.Duration
 	expirationType     ExpirationType
 	expirationInterval time.Duration
@@ -84,6 +95,7 @@ type Cache struct {
 	items        map[interface{}]*list.Element
 	evictionList *list.List
 	mutex        sync.RWMutex
+	rand         RandGenerator
 }
 
 // New constructs an LRU Cache with the given Config object. config.Capacity
@@ -99,20 +111,37 @@ func New(config Config) *Cache {
 		panic("Must supply a zero or positive config.MaxAge")
 	}
 
+	if config.MinAge < 0 {
+		panic("Must supply a zero or positive config.MinAge")
+	}
+
+	if config.MinAge > 0 && config.MinAge > config.MaxAge {
+		panic("config.MinAge must be less than or equal to config.MaxAge")
+	}
+
+	minAge := config.MinAge
+	if minAge == 0 {
+		minAge = config.MaxAge
+	}
+
 	interval := config.ExpirationInterval
 	if interval <= 0 {
 		interval = config.MaxAge
 	}
 
+	seed := rand.NewSource(time.Now().UnixNano())
+
 	cache := &Cache{
 		capacity:           config.Capacity,
 		maxAge:             config.MaxAge,
+		minAge:             minAge,
 		expirationType:     config.ExpirationType,
 		expirationInterval: interval,
 		onEviction:         config.OnEviction,
 		onExpiration:       config.OnExpiration,
 		items:              make(map[interface{}]*list.Element),
 		evictionList:       list.New(),
+		rand:               rand.New(seed),
 	}
 
 	if config.ExpirationType == ActiveExpiration && interval > 0 {
@@ -133,17 +162,17 @@ func (cache *Cache) Set(key, value interface{}) bool {
 	defer cache.mutex.Unlock()
 
 	cache.sets++
-	created := time.Now()
+	timestamp := cache.getTimestamp()
 
 	if element, ok := cache.items[key]; ok {
 		cache.evictionList.MoveToFront(element)
 		entry := element.Value.(*cacheEntry)
 		entry.value = value
-		entry.created = created
+		entry.timestamp = timestamp
 		return false
 	}
 
-	entry := &cacheEntry{key, value, created}
+	entry := &cacheEntry{key, value, timestamp}
 	element := cache.evictionList.PushFront(entry)
 	cache.items[key] = element
 
@@ -165,7 +194,7 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 
 	if element, ok := cache.items[key]; ok {
 		entry := element.Value.(*cacheEntry)
-		if cache.maxAge == 0 || time.Since(entry.created) <= cache.maxAge {
+		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
 			cache.evictionList.MoveToFront(element)
 			cache.hits++
 			return entry.value, true
@@ -284,16 +313,41 @@ func (cache *Cache) OrderedKeys() []interface{} {
 }
 
 // SetMaxAge updates the max age for items in the cache. A duration of zero
-// disables expiration. A negative duration results in an error.
+// disables expiration. A negative duration, or one that is less than minAge,
+// results in an error.
 func (cache *Cache) SetMaxAge(maxAge time.Duration) error {
 	if maxAge < 0 {
 		return errors.New("Must supply a zero or positive maxAge")
+	} else if maxAge < cache.minAge {
+		return errors.New("Must supply a maxAge greater than or equal to minAge")
 	}
 
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
 	cache.maxAge = maxAge
+
+	return nil
+}
+
+// SetMinAge updates the min age for items in the cache. A duration of zero
+// or equal to maxAge disables jitter. A negative duration, or one that is
+// greater than maxAge, results in an error.
+func (cache *Cache) SetMinAge(minAge time.Duration) error {
+	if minAge < 0 {
+		return errors.New("Must supply a zero or positive minAge")
+	} else if minAge > cache.maxAge {
+		return errors.New("Must supply a minAge lesser than or equal to maxAge")
+	}
+
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	if minAge == 0 {
+		cache.minAge = cache.maxAge
+	} else {
+		cache.minAge = minAge
+	}
 
 	return nil
 }
@@ -338,7 +392,7 @@ func (cache *Cache) deleteExpired() {
 
 		if element, ok := cache.items[keys[i]]; ok {
 			entry := element.Value.(*cacheEntry)
-			if cache.maxAge > 0 && time.Since(entry.created) > cache.maxAge {
+			if cache.maxAge > 0 && time.Since(entry.timestamp) > cache.maxAge {
 				cache.deleteElement(element)
 				if cache.onExpiration != nil {
 					cache.onExpiration(entry.key, entry.value)
@@ -369,4 +423,17 @@ func (cache *Cache) deleteElement(element *list.Element) *cacheEntry {
 	entry := element.Value.(*cacheEntry)
 	delete(cache.items, entry.key)
 	return entry
+}
+
+func (cache *Cache) getTimestamp() time.Time {
+	timestamp := time.Now()
+	if cache.minAge == cache.maxAge {
+		return timestamp
+	}
+
+	jitter := cache.maxAge - cache.minAge
+	max := int(jitter.Nanoseconds())
+	randVal := cache.rand.Intn(max)
+
+	return timestamp.Add(time.Duration(randVal))
 }

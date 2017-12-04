@@ -1,6 +1,6 @@
 # agecache
 
-Thread-safe LRU cache supporting max age and expiration. Supports cache
+Thread-safe LRU cache supporting expiration and jitter. Supports cache
 statistics, as well as eviction and expiration callbacks. Differs from
 some implementations in that OnEviction is only invoked when an entry
 is removed as a result of the LRU eviction policy - not when you explicitly
@@ -11,7 +11,8 @@ or actively enforced by iterating over all keys with an interval.
 ``` go
 cache := agecache.New(agecache.Config{
 	Capacity: 100,
-	MaxAge:   time.Hour,
+	MaxAge:   70 * time.Minute,
+	MinAge:   60 * time.Minute,
 	OnExpiration: func(key, value interface{}) {
 		// Handle expiration
 	},
