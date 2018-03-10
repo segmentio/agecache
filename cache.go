@@ -387,7 +387,7 @@ func (cache *Cache) Stats() Stats {
 func (cache *Cache) deleteExpired() {
 	keys := cache.Keys()
 
-	for i, _ := range keys {
+	for i := range keys {
 		cache.mutex.Lock()
 
 		if element, ok := cache.items[keys[i]]; ok {
