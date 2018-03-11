@@ -1,4 +1,4 @@
-// LRU largely inspired by https://github.com/golang/groupcache
+// Package agecache is largely inspired by https://github.com/golang/groupcache
 package agecache
 
 import (
@@ -10,14 +10,21 @@ import (
 )
 
 // Stats hold cache statistics.
+//
+// The struct supports stats package tags, example:
+//
+// 		prev := cache.Stats()
+// 		s := cache.Stats().Delta(prev)
+// 		stats.WithPrefix("mycache").Observe(s)
+//
 type Stats struct {
-	Capacity  int64 // Gauge, maximum capacity for the cache
-	Count     int64 // Gauge, number of items in the cache
-	Sets      int64 // Counter, number of sets
-	Gets      int64 // Counter, number of gets
-	Hits      int64 // Counter, number of cache hits from Get operations
-	Misses    int64 // Counter, number of cache misses from Get operations
-	Evictions int64 // Counter, number of evictions
+	Capacity  int64 `metric:"capacity" type:"gauge"`    // Gauge, maximum capacity for the cache
+	Count     int64 `metric:"count" type:"gauge"`       // Gauge, number of items in the cache
+	Sets      int64 `metric:"sets" type:"counter"`      // Counter, number of sets
+	Gets      int64 `metric:"gets" type:"counter"`      // Counter, number of gets
+	Hits      int64 `metric:"hits" type:"counter"`      // Counter, number of cache hits from Get operations
+	Misses    int64 `metric:"misses" type:"counter"`    // Counter, number of cache misses from Get operations
+	Evictions int64 `metric:"evictions" type:"counter"` // Counter, number of evictions
 }
 
 // Delta returns a Stats object such that all counters are calculated as the
@@ -34,18 +41,26 @@ func (stats Stats) Delta(previous Stats) Stats {
 	}
 }
 
+// RandGenerator represents a random number generator.
 type RandGenerator interface {
 	Intn(n int) int
 }
 
+// ExpirationType enumerates expiration types.
 type ExpirationType int
 
 const (
+	// PassiveExpration expires items passively by checking
+	// the item expiry when `.Get()` is called, if the item was
+	// expired, it is deleted and nil is returned.
 	PassiveExpration ExpirationType = iota
+
+	// ActiveExpiration expires items by managing
+	// a goroutine to actively GC expired items in the background.
 	ActiveExpiration
 )
 
-// Configuration for the Cache.
+// Config configures the cache.
 type Config struct {
 	// Maximum number of items in the cache
 	Capacity int
@@ -74,7 +89,7 @@ type cacheEntry struct {
 	timestamp time.Time
 }
 
-// LRU implements a thread-safe fixed-capacity LRU cache.
+// Cache implements a thread-safe fixed-capacity LRU cache.
 type Cache struct {
 	// Fields defined by configuration
 	capacity           int
