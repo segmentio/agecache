@@ -234,8 +234,13 @@ func (cache *Cache) Has(key interface{}) bool {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
-	_, ok := cache.items[key]
-	return ok
+	if element, ok := cache.items[key]; ok {
+		entry := element.Value.(*cacheEntry)
+		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
+			return true
+		}
+	}
+	return false
 }
 
 // Peek returns the value at the specified key and a boolean specifying whether
@@ -246,7 +251,11 @@ func (cache *Cache) Peek(key interface{}) (interface{}, bool) {
 	defer cache.mutex.RUnlock()
 
 	if element, ok := cache.items[key]; ok {
-		return element.Value.(*cacheEntry).value, true
+		entry := element.Value.(*cacheEntry)
+		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
+			return entry.value, true
+		}
+		return nil, false
 	}
 
 	return nil, false

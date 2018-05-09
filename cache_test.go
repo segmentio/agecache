@@ -139,20 +139,24 @@ func TestJitter(t *testing.T) {
 func TestHas(t *testing.T) {
 	cache := New(Config{Capacity: 1, MaxAge: time.Millisecond})
 	cache.Set("foo", "bar")
-	<-time.After(time.Millisecond * 2)
-
 	ok := cache.Has("foo")
 	assert.True(t, ok)
+	<-time.After(time.Millisecond * 2)
+
+	ok = cache.Has("foo")
+	assert.False(t, ok)
 }
 
 func TestPeek(t *testing.T) {
 	cache := New(Config{Capacity: 1, MaxAge: time.Millisecond})
 	cache.Set("foo", "bar")
-	<-time.After(time.Millisecond * 2)
-
 	val, ok := cache.Peek("foo")
 	assert.True(t, ok)
 	assert.Equal(t, "bar", val)
+	<-time.After(time.Millisecond * 2)
+
+	val, ok = cache.Peek("foo")
+	assert.False(t, ok)
 }
 
 func TestRemove(t *testing.T) {
