@@ -3,10 +3,11 @@ package agecache
 
 import (
 	"container/list"
-	"errors"
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
 // Stats hold cache statistics.
@@ -80,6 +81,8 @@ type Config struct {
 	OnEviction func(key, value interface{})
 	// Optional callback invoked when an item expired
 	OnExpiration func(key, value interface{})
+	// Optional callback invoked when a key is missing/expired on `Get()`
+	OnMiss func(key interface{}) (interface{}, error)
 }
 
 // Entry pointed to by each list.Element
@@ -99,6 +102,7 @@ type Cache struct {
 	expirationInterval time.Duration
 	onEviction         func(key, value interface{})
 	onExpiration       func(key, value interface{})
+	onMiss             func(key interface{}) (interface{}, error)
 
 	// Cache statistics
 	sets      int64
@@ -154,6 +158,7 @@ func New(config Config) *Cache {
 		expirationInterval: interval,
 		onEviction:         config.OnEviction,
 		onExpiration:       config.OnExpiration,
+		onMiss:             config.OnMiss,
 		items:              make(map[interface{}]*list.Element),
 		evictionList:       list.New(),
 		rand:               rand.New(seed),
@@ -176,6 +181,10 @@ func (cache *Cache) Set(key, value interface{}) bool {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
+	return cache.set(key, value)
+}
+
+func (cache *Cache) set(key, value interface{}) bool {
 	cache.sets++
 	timestamp := cache.getTimestamp()
 
@@ -198,10 +207,15 @@ func (cache *Cache) Set(key, value interface{}) bool {
 	return evict
 }
 
-// Get returns the value stored at `key`. The boolean value reports whether or
-// not the value was found. The OnExpiration callback is invoked if the value
-// had expired on access
-func (cache *Cache) Get(key interface{}) (interface{}, bool) {
+var (
+	ErrNotFound = errors.New("not found")
+)
+
+// Get returns the value stored at `key`. Error is set to ErrNotFound if
+// key not found or expired. If OnMiss is set, value will be fetched, set and returned.
+// If fetch failed, error will be returned. The OnExpiration callback is invoked if the value
+// had expired on access.
+func (cache *Cache) Get(key interface{}) (interface{}, error) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -212,20 +226,27 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
 			cache.evictionList.MoveToFront(element)
 			cache.hits++
-			return entry.value, true
+			return entry.value, nil
 		}
 
 		// Entry expired
 		cache.deleteElement(element)
-		cache.misses++
 		if cache.onExpiration != nil {
 			cache.onExpiration(entry.key, entry.value)
 		}
-		return nil, false
 	}
 
 	cache.misses++
-	return nil, false
+	if cache.onMiss != nil {
+		value, err := cache.onMiss(key)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to fetch values for key %v", key)
+		}
+		cache.set(key, value)
+		return value, nil
+	}
+
+	return nil, ErrNotFound
 }
 
 // Has returns whether or not the `key` is in the cache without updating
@@ -381,6 +402,14 @@ func (cache *Cache) OnExpiration(callback func(key, value interface{})) {
 	defer cache.mutex.Unlock()
 
 	cache.onExpiration = callback
+}
+
+// OnMiss sets the callback to fetch value on miss.
+func (cache *Cache) OnMiss(callback func(key interface{}) (interface{}, error)) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	cache.onMiss = callback
 }
 
 // Stats returns cache stats.
