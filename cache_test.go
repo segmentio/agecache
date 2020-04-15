@@ -109,29 +109,57 @@ func TestExpiration(t *testing.T) {
 	assert.False(t, eviction)
 }
 
-type MockRandGenerator struct{}
+type MockRandGenerator struct {
+	startAt int64
+	incr    int64
+	state   int64
+}
 
-func (mock *MockRandGenerator) Intn(n int) int {
-	// Always return max value
-	return n
+func (mock *MockRandGenerator) Int63n(n int64) int64 {
+	if mock.state == 0 {
+		mock.state = mock.startAt
+	}
+	ret := mock.state
+	mock.state += mock.incr
+	return ret
 }
 
 func TestJitter(t *testing.T) {
 	cache := New(Config{
 		Capacity: 1,
-		MaxAge:   time.Millisecond * 3,
+		MaxAge:   350 * time.Millisecond,
 		MinAge:   time.Millisecond,
 	})
 
-	cache.rand = &MockRandGenerator{}
+	cache.rand = &MockRandGenerator{
+		startAt: (300 * time.Millisecond).Nanoseconds(),
+		incr:    (-50 * time.Millisecond).Nanoseconds(),
+	}
 
-	cache.Set("foo", "bar")
-
-	<-time.After(time.Millisecond * 2)
+	cache.Set("foo", "bar") // 300ms
 	_, ok := cache.Get("foo")
 	assert.True(t, ok)
 
-	<-time.After(time.Millisecond * 3)
+	time.Sleep(50 * time.Millisecond)
+	_, ok = cache.Get("foo")
+	assert.False(t, ok)
+
+	cache.Set("foo", "bar") // 250ms
+	time.Sleep(100 * time.Millisecond)
+	_, ok = cache.Get("foo")
+	assert.False(t, ok)
+
+	cache.Set("foo", "bar") // 200ms
+	time.Sleep(50 * time.Millisecond)
+	_, ok = cache.Get("foo")
+	assert.True(t, ok)
+
+	cache.Set("foo", "bar") // 150ms
+	time.Sleep(100 * time.Millisecond)
+	_, ok = cache.Get("foo")
+	assert.True(t, ok)
+
+	time.Sleep(100 * time.Millisecond)
 	_, ok = cache.Get("foo")
 	assert.False(t, ok)
 }

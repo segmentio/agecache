@@ -43,7 +43,7 @@ func (stats Stats) Delta(previous Stats) Stats {
 
 // RandGenerator represents a random number generator.
 type RandGenerator interface {
-	Intn(n int) int
+	Int63n(n int64) int64
 }
 
 // ExpirationType enumerates expiration types.
@@ -447,8 +447,7 @@ func (cache *Cache) getTimestamp() time.Time {
 	}
 
 	jitter := cache.maxAge - cache.minAge
-	max := int(jitter.Nanoseconds())
-	randVal := cache.rand.Intn(max)
+	randVal := cache.rand.Int63n(jitter.Nanoseconds())
 
-	return timestamp.Add(time.Duration(randVal))
+	return timestamp.Add(time.Duration(-randVal))
 }
