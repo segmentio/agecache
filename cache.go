@@ -402,6 +402,10 @@ func (cache *Cache) Stats() Stats {
 // Resize the cache to hold at most n entries. If n is smaller than the current
 // size, entries are evicted to fit the new size.
 func (cache *Cache) Resize(n int) {
+	if n <= 0 {
+		panic("Must supply a positive capacity to Resize")
+	}
+
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
