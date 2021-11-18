@@ -408,12 +408,13 @@ func (cache *Cache) Resize(n int) {
 
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
+	c := cache.capacity
+	cache.capacity = n
 
-	if n >= cache.capacity {
-		cache.capacity = n
+	if n >= c {
 		return
 	}
-	for i := 0; i < cache.capacity-n; i++ {
+	for i := 0; i <  c - n; i++ {
 		successful := cache.evictOldest()
 		if !successful {
 			break
