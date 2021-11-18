@@ -399,6 +399,24 @@ func (cache *Cache) Stats() Stats {
 	}
 }
 
+// Resize the cache to hold at most n entries. If n is smaller than the current
+// size, entries are evicted to fit the new size.
+func (cache *Cache) Resize(n int) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	if n >= cache.capacity {
+		cache.capacity = n
+		return
+	}
+	for i := 0; i < cache.capacity-n; i++ {
+		successful := cache.evictOldest()
+		if !successful {
+			break
+		}
+	}
+}
+
 func (cache *Cache) deleteExpired() {
 	keys := cache.Keys()
 
