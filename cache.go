@@ -61,7 +61,7 @@ const (
 )
 
 // Config configures the cache.
-type Config struct {
+type Config[T any] struct {
 	// Maximum number of items in the cache
 	Capacity int
 	// Optional max duration before an item expires. Must be greater than or
@@ -77,28 +77,28 @@ type Config struct {
 	// to the MaxAge
 	ExpirationInterval time.Duration
 	// Optional callback invoked when an item is evicted due to the LRU policy
-	OnEviction func(key, value interface{})
+	OnEviction func(key interface{}, value T)
 	// Optional callback invoked when an item expired
-	OnExpiration func(key, value interface{})
+	OnExpiration func(key interface{}, value T)
 }
 
 // Entry pointed to by each list.Element
-type cacheEntry struct {
+type cacheEntry[T any] struct {
 	key       interface{}
-	value     interface{}
+	value     T
 	timestamp time.Time
 }
 
 // Cache implements a thread-safe fixed-capacity LRU cache.
-type Cache struct {
+type Cache[T any] struct {
 	// Fields defined by configuration
 	capacity           int
 	minAge             time.Duration
 	maxAge             time.Duration
 	expirationType     ExpirationType
 	expirationInterval time.Duration
-	onEviction         func(key, value interface{})
-	onExpiration       func(key, value interface{})
+	onEviction         func(key interface{}, value T)
+	onExpiration       func(key interface{}, value T)
 
 	// Cache statistics
 	sets      int64
@@ -117,7 +117,7 @@ type Cache struct {
 // must be a positive int, and config.MaxAge a zero or positive duration. A
 // duration of zero disables item expiration. Panics given an invalid
 // config.Capacity or config.MaxAge.
-func New(config Config) *Cache {
+func New[T any](config Config[T]) *Cache[T] {
 	if config.Capacity <= 0 {
 		panic("Must supply a positive config.Capacity")
 	}
@@ -146,7 +146,7 @@ func New(config Config) *Cache {
 
 	seed := rand.NewSource(time.Now().UnixNano())
 
-	cache := &Cache{
+	cache := &Cache[T]{
 		capacity:           config.Capacity,
 		maxAge:             config.MaxAge,
 		minAge:             minAge,
@@ -172,7 +172,8 @@ func New(config Config) *Cache {
 
 // Set updates a key:value pair in the cache. Returns true if an eviction
 // occurrred, and subsequently invokes the OnEviction callback.
-func (cache *Cache) Set(key, value interface{}) bool {
+func (cache *Cache[T]) Set(key interface{}, value T) bool {
+
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -181,13 +182,13 @@ func (cache *Cache) Set(key, value interface{}) bool {
 
 	if element, ok := cache.items[key]; ok {
 		cache.evictionList.MoveToFront(element)
-		entry := element.Value.(*cacheEntry)
+		entry := element.Value.(*cacheEntry[T])
 		entry.value = value
 		entry.timestamp = timestamp
 		return false
 	}
 
-	entry := &cacheEntry{key, value, timestamp}
+	entry := &cacheEntry[T]{key, value, timestamp}
 	element := cache.evictionList.PushFront(entry)
 	cache.items[key] = element
 
@@ -201,18 +202,18 @@ func (cache *Cache) Set(key, value interface{}) bool {
 // Get returns the value stored at `key`. The boolean value reports whether or
 // not the value was found. The OnExpiration callback is invoked if the value
 // had expired on access
-func (cache *Cache) Get(key interface{}) (interface{}, bool) {
+func (cache *Cache[T]) Get(key interface{}) (*T, bool) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
 	cache.gets++
 
 	if element, ok := cache.items[key]; ok {
-		entry := element.Value.(*cacheEntry)
+		entry := element.Value.(*cacheEntry[T])
 		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
 			cache.evictionList.MoveToFront(element)
 			cache.hits++
-			return entry.value, true
+			return &entry.value, true
 		}
 
 		// Entry expired
@@ -230,7 +231,7 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 
 // Has returns whether or not the `key` is in the cache without updating
 // how recently it was accessed or deleting it for having expired.
-func (cache *Cache) Has(key interface{}) bool {
+func (cache *Cache[T]) Has(key interface{}) bool {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
@@ -241,12 +242,12 @@ func (cache *Cache) Has(key interface{}) bool {
 // Peek returns the value at the specified key and a boolean specifying whether
 // or not it was found, without updating how recently it was accessed or
 // deleting it for having expired.
-func (cache *Cache) Peek(key interface{}) (interface{}, bool) {
+func (cache *Cache[T]) Peek(key interface{}) (*T, bool) {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
 	if element, ok := cache.items[key]; ok {
-		return element.Value.(*cacheEntry).value, true
+		return &element.Value.(*cacheEntry[T]).value, true
 	}
 
 	return nil, false
@@ -254,7 +255,7 @@ func (cache *Cache) Peek(key interface{}) (interface{}, bool) {
 
 // Remove removes the provided key from the cache, returning a bool indicating
 // whether or not it existed.
-func (cache *Cache) Remove(key interface{}) bool {
+func (cache *Cache[T]) Remove(key interface{}) bool {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -269,7 +270,7 @@ func (cache *Cache) Remove(key interface{}) bool {
 // EvictOldest removes the oldest item from the cache, while also invoking any
 // eviction callback. A bool is returned indicating whether or not an item was
 // removed
-func (cache *Cache) EvictOldest() bool {
+func (cache *Cache[T]) EvictOldest() bool {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -277,7 +278,7 @@ func (cache *Cache) EvictOldest() bool {
 }
 
 // Len returns the number of items in the cache.
-func (cache *Cache) Len() int {
+func (cache *Cache[T]) Len() int {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
@@ -285,7 +286,7 @@ func (cache *Cache) Len() int {
 }
 
 // Clear empties the cache.
-func (cache *Cache) Clear() {
+func (cache *Cache[T]) Clear() {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -296,7 +297,7 @@ func (cache *Cache) Clear() {
 }
 
 // Keys returns all keys in the cache.
-func (cache *Cache) Keys() []interface{} {
+func (cache *Cache[T]) Keys() []interface{} {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
@@ -312,7 +313,7 @@ func (cache *Cache) Keys() []interface{} {
 }
 
 // OrderedKeys returns all keys in the cache, ordered from oldest to newest.
-func (cache *Cache) OrderedKeys() []interface{} {
+func (cache *Cache[T]) OrderedKeys() []interface{} {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
@@ -320,7 +321,7 @@ func (cache *Cache) OrderedKeys() []interface{} {
 	i := 0
 
 	for element := cache.evictionList.Back(); element != nil; element = element.Prev() {
-		keys[i] = element.Value.(*cacheEntry).key
+		keys[i] = element.Value.(*cacheEntry[T]).key
 		i++
 	}
 
@@ -330,7 +331,7 @@ func (cache *Cache) OrderedKeys() []interface{} {
 // SetMaxAge updates the max age for items in the cache. A duration of zero
 // disables expiration. A negative duration, or one that is less than minAge,
 // results in an error.
-func (cache *Cache) SetMaxAge(maxAge time.Duration) error {
+func (cache *Cache[T]) SetMaxAge(maxAge time.Duration) error {
 	if maxAge < 0 {
 		return errors.New("Must supply a zero or positive maxAge")
 	} else if maxAge < cache.minAge {
@@ -348,7 +349,7 @@ func (cache *Cache) SetMaxAge(maxAge time.Duration) error {
 // SetMinAge updates the min age for items in the cache. A duration of zero
 // or equal to maxAge disables jitter. A negative duration, or one that is
 // greater than maxAge, results in an error.
-func (cache *Cache) SetMinAge(minAge time.Duration) error {
+func (cache *Cache[T]) SetMinAge(minAge time.Duration) error {
 	if minAge < 0 {
 		return errors.New("Must supply a zero or positive minAge")
 	} else if minAge > cache.maxAge {
@@ -368,7 +369,7 @@ func (cache *Cache) SetMinAge(minAge time.Duration) error {
 }
 
 // OnEviction sets the eviction callback.
-func (cache *Cache) OnEviction(callback func(key, value interface{})) {
+func (cache *Cache[T]) OnEviction(callback func(key interface{}, value T)) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -376,7 +377,7 @@ func (cache *Cache) OnEviction(callback func(key, value interface{})) {
 }
 
 // OnExpiration sets the expiration callback.
-func (cache *Cache) OnExpiration(callback func(key, value interface{})) {
+func (cache *Cache[T]) OnExpiration(callback func(key interface{}, value T)) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
@@ -384,7 +385,7 @@ func (cache *Cache) OnExpiration(callback func(key, value interface{})) {
 }
 
 // Stats returns cache stats.
-func (cache *Cache) Stats() Stats {
+func (cache *Cache[T]) Stats() Stats {
 	cache.mutex.RLock()
 	defer cache.mutex.RUnlock()
 
@@ -399,14 +400,14 @@ func (cache *Cache) Stats() Stats {
 	}
 }
 
-func (cache *Cache) deleteExpired() {
+func (cache *Cache[T]) deleteExpired() {
 	keys := cache.Keys()
 
 	for i := range keys {
 		cache.mutex.Lock()
 
 		if element, ok := cache.items[keys[i]]; ok {
-			entry := element.Value.(*cacheEntry)
+			entry := element.Value.(*cacheEntry[T])
 			if cache.maxAge > 0 && time.Since(entry.timestamp) > cache.maxAge {
 				cache.deleteElement(element)
 				if cache.onExpiration != nil {
@@ -419,7 +420,7 @@ func (cache *Cache) deleteExpired() {
 	}
 }
 
-func (cache *Cache) evictOldest() bool {
+func (cache *Cache[T]) evictOldest() bool {
 	element := cache.evictionList.Back()
 	if element == nil {
 		return false
@@ -433,14 +434,14 @@ func (cache *Cache) evictOldest() bool {
 	return true
 }
 
-func (cache *Cache) deleteElement(element *list.Element) *cacheEntry {
+func (cache *Cache[T]) deleteElement(element *list.Element) *cacheEntry[T] {
 	cache.evictionList.Remove(element)
-	entry := element.Value.(*cacheEntry)
+	entry := element.Value.(*cacheEntry[T])
 	delete(cache.items, entry.key)
 	return entry
 }
 
-func (cache *Cache) getTimestamp() time.Time {
+func (cache *Cache[T]) getTimestamp() time.Time {
 	timestamp := time.Now()
 	if cache.minAge == cache.maxAge {
 		return timestamp
