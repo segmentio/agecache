@@ -354,6 +354,37 @@ func TestActiveExpiration(t *testing.T) {
 	assert.True(t, duration < time.Millisecond*2)
 }
 
+func TestResize(t *testing.T) {
+	cache := New(Config{
+		Capacity: 2,
+	})
+	cache.Set("a", 1)
+	cache.Set("b", 1)
+
+	cache.Resize(2) // no-op
+
+	assert.True(t, cache.Has("a"))
+	assert.True(t, cache.Has("b"))
+
+	cache.Set("c", 1)
+	assert.False(t, cache.Has("a"))
+	assert.True(t, cache.Has("b"))
+	assert.True(t, cache.Has("c"))
+
+	cache.Resize(1)
+	assert.False(t, cache.Has("a"))
+	assert.False(t, cache.Has("b"))
+	assert.True(t, cache.Has("c"))
+
+	cache.Resize(2)
+	cache.Set("d", 1)
+
+	assert.False(t, cache.Has("a"))
+	assert.False(t, cache.Has("b"))
+	assert.True(t, cache.Has("c"))
+	assert.True(t, cache.Has("d"))
+}
+
 func TestStats(t *testing.T) {
 	t.Run("reports capacity", func(t *testing.T) {
 		cache := New(Config{Capacity: 100})
