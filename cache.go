@@ -61,7 +61,29 @@ const (
 )
 
 // Config configures the cache.
-type Config[T any] struct {
+type Config struct {
+	// Maximum number of items in the cache
+	Capacity int
+	// Optional max duration before an item expires. Must be greater than or
+	// equal to MinAge. If zero, expiration is disabled.
+	MaxAge time.Duration
+	// Optional min duration before an item expires. Must be less than or equal
+	// to MaxAge. When less than MaxAge, uniformly distributed random jitter is
+	// added to the expiration time. If equal or zero, jitter is disabled.
+	MinAge time.Duration
+	// Type of key expiration: Passive or Active
+	ExpirationType ExpirationType
+	// For active expiration, how often to iterate over the keyspace. Defaults
+	// to the MaxAge
+	ExpirationInterval time.Duration
+	// Optional callback invoked when an item is evicted due to the LRU policy
+	OnEviction func(key interface{}, value interface{})
+	// Optional callback invoked when an item expired
+	OnExpiration func(key interface{}, value interface{})
+}
+
+// ConfigGeneric configures the cache.
+type ConfigGeneric[T any] struct {
 	// Maximum number of items in the cache
 	Capacity int
 	// Optional max duration before an item expires. Must be greater than or
@@ -117,7 +139,23 @@ type Cache[T any] struct {
 // must be a positive int, and config.MaxAge a zero or positive duration. A
 // duration of zero disables item expiration. Panics given an invalid
 // config.Capacity or config.MaxAge.
-func New[T any](config Config[T]) *Cache[T] {
+func New(config Config) *Cache[interface{}] {
+	return NewGeneric(ConfigGeneric[interface{}]{
+		Capacity:           config.Capacity,
+		MaxAge:             config.MaxAge,
+		MinAge:             config.MinAge,
+		ExpirationType:     config.ExpirationType,
+		ExpirationInterval: config.ExpirationInterval,
+		OnEviction:         config.OnEviction,
+		OnExpiration:       config.OnExpiration,
+	})
+}
+
+// NewGeneric constructs an LRU Cache with the given Config object. config.Capacity
+// must be a positive int, and config.MaxAge a zero or positive duration. A
+// duration of zero disables item expiration. Panics given an invalid
+// config.Capacity or config.MaxAge.
+func NewGeneric[T any](config ConfigGeneric[T]) *Cache[T] {
 	if config.Capacity <= 0 {
 		panic("Must supply a positive config.Capacity")
 	}

@@ -7,7 +7,7 @@ import (
 
 func ExampleNew() {
 	// Create a new cache of type string, that expires after 10 mintues
-	cache := New(Config[string]{
+	cache := NewGeneric(Config[string]{
 		Capacity:           10,
 		ExpirationInterval: time.Minute * 10,
 	})
