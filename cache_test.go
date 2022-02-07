@@ -355,7 +355,7 @@ func TestActiveExpiration(t *testing.T) {
 }
 
 func TestResize(t *testing.T) {
-	cache := New(Config{
+	cache := New(Config[int]{
 		Capacity: 2,
 	})
 	cache.Set("a", 1)

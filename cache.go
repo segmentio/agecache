@@ -402,7 +402,7 @@ func (cache *Cache[T]) Stats() Stats {
 
 // Resize the cache to hold at most n entries. If n is smaller than the current
 // size, entries are evicted to fit the new size. It errors if n <= 0.
-func (cache *Cache) Resize(n int) error {
+func (cache *Cache[T]) Resize(n int) error {
 	if n <= 0 {
 		return errors.New("must supply a positive capacity to Resize")
 	}
