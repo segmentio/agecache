@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	cache := agecache.New(agecache.Config{
+	cache := agecache.New(agecache.Config[string, string]{
 		Capacity: 100,
 		MaxAge:   time.Second,
 	})
