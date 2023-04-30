@@ -109,6 +109,34 @@ func TestExpiration(t *testing.T) {
 	assert.False(t, eviction)
 }
 
+func TestExpirationAfterAccess(t *testing.T) {
+	var k, v interface{}
+	var eviction bool
+
+	cache := New(Config{
+		Capacity:        1,
+		MaxAge:          time.Millisecond,
+		ExpireAfterType: ExpireAfterAccess,
+		OnExpiration: func(key, value interface{}) {
+			k = key
+			v = value
+		},
+		OnEviction: func(key, value interface{}) {
+			eviction = true
+		},
+	})
+
+	cache.Set("foo", 1)
+	<-time.After(time.Millisecond * 2)
+
+	val, ok := cache.Get("foo")
+	assert.True(t, ok)
+	assert.NotNil(t, val)
+	assert.Nil(t, k)
+	assert.Nil(t, v)
+	assert.False(t, eviction)
+}
+
 type MockRandGenerator struct {
 	startAt int64
 	incr    int64
