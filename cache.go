@@ -13,10 +13,9 @@ import (
 //
 // The struct supports stats package tags, example:
 //
-// 		prev := cache.Stats()
-// 		s := cache.Stats().Delta(prev)
-// 		stats.WithPrefix("mycache").Observe(s)
-//
+//	prev := cache.Stats()
+//	s := cache.Stats().Delta(prev)
+//	stats.WithPrefix("mycache").Observe(s)
 type Stats struct {
 	Capacity  int64 `metric:"capacity" type:"gauge"`    // Gauge, maximum capacity for the cache
 	Count     int64 `metric:"count" type:"gauge"`       // Gauge, number of items in the cache
@@ -226,6 +225,38 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 
 	cache.misses++
 	return nil, false
+}
+
+// RefreshCache refreshes the entire cache with the new items map
+func (cache *Cache) RefreshCache(items map[interface{}]interface{}) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	for _, val := range cache.items {
+		cache.deleteElement(val)
+	}
+	cache.evictionList.Init()
+
+	for key, value := range items {
+		cache.sets++
+		timestamp := cache.getTimestamp()
+
+		if element, ok := cache.items[key]; ok {
+			cache.evictionList.MoveToFront(element)
+			entry := element.Value.(*cacheEntry)
+			entry.value = value
+			entry.timestamp = timestamp
+		}
+
+		entry := &cacheEntry{key, value, timestamp}
+		element := cache.evictionList.PushFront(entry)
+		cache.items[key] = element
+
+		evict := cache.evictionList.Len() > cache.capacity
+		if evict {
+			cache.evictOldest()
+		}
+	}
 }
 
 // Has returns whether or not the `key` is in the cache without updating

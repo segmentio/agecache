@@ -256,6 +256,29 @@ func TestClear(t *testing.T) {
 	assert.Equal(t, 0, cache.Len())
 }
 
+func TestRefreshCache(t *testing.T) {
+	cache := New(Config{Capacity: 10})
+	cache.Set("foo", 1)
+	cache.Set("bar", 2)
+
+	refreshedCacheEntries := map[interface{}]interface{}{}
+	for i := 0; i <= 9; i++ {
+		refreshedCacheEntries[i] = i
+	}
+	cache.RefreshCache(refreshedCacheEntries)
+
+	assert.False(t, cache.Has("foo"))
+	assert.False(t, cache.Has("bar"))
+
+	for i := 0; i <= 9; i++ {
+		_, ok := cache.Get(i)
+		assert.True(t, ok)
+	}
+
+	assert.Equal(t, 10, cache.Len())
+
+}
+
 func TestKeys(t *testing.T) {
 	cache := New(Config{Capacity: 10})
 	cache.Set("foo", 1)
