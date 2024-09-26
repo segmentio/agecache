@@ -79,6 +79,12 @@ type Config struct {
 	OnEviction func(key, value interface{})
 	// Optional callback invoked when an item expired
 	OnExpiration func(key, value interface{})
+	// Optional refresh interval after which all items in the cache expires.
+	// If zero, refreshing cache is disabled.
+	RefreshInterval time.Duration
+	// Optional on refresh callback invoked when the cache is refreshed
+	// Both RefreshInterval and OnRefresh must be provided to enable background cache refresh
+	OnRefresh func() map[interface{}]interface{}
 }
 
 // Entry pointed to by each list.Element
@@ -133,6 +139,10 @@ func New(config Config) *Cache {
 		panic("config.MinAge must be less than or equal to config.MaxAge")
 	}
 
+	if config.RefreshInterval < 0 {
+		panic("Must supply a zero or positive config.RefreshInterval")
+	}
+
 	minAge := config.MinAge
 	if minAge == 0 {
 		minAge = config.MaxAge
@@ -162,6 +172,18 @@ func New(config Config) *Cache {
 		go func() {
 			for range time.Tick(interval) {
 				cache.deleteExpired()
+			}
+		}()
+	}
+
+	if config.RefreshInterval > 0 && config.OnRefresh != nil {
+		cache.RefreshCache(config.OnRefresh())
+		go func() {
+			t := time.NewTicker(config.RefreshInterval)
+			defer t.Stop()
+			for {
+				<-t.C
+				cache.RefreshCache(config.OnRefresh())
 			}
 		}()
 	}
@@ -232,9 +254,7 @@ func (cache *Cache) RefreshCache(items map[interface{}]interface{}) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
-	for _, val := range cache.items {
-		cache.deleteElement(val)
-	}
+	cache.items = make(map[interface{}]*list.Element)
 	cache.evictionList.Init()
 
 	for key, value := range items {

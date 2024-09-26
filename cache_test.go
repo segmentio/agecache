@@ -34,6 +34,12 @@ func TestInvalidMinAge(t *testing.T) {
 	})
 }
 
+func TestInvalidRefreshInterval(t *testing.T) {
+	assert.Panics(t, func() {
+		New(Config{Capacity: 1, RefreshInterval: -1 * time.Hour})
+	})
+}
+
 func TestBasicSetGet(t *testing.T) {
 	cache := New(Config{Capacity: 2})
 	cache.Set("foo", 1)
@@ -107,6 +113,34 @@ func TestExpiration(t *testing.T) {
 	assert.Equal(t, "foo", k)
 	assert.Equal(t, 1, v)
 	assert.False(t, eviction)
+}
+
+func TestCacheBackgroundRefresh(t *testing.T) {
+	count := 0
+	cache := New(Config{
+		Capacity:        1,
+		RefreshInterval: 3 * time.Second,
+		OnRefresh: func() map[interface{}]interface{} {
+			count++
+			return map[interface{}]interface{}{"key": count}
+		},
+	})
+
+	value, ok := cache.Get("key")
+	assert.Equal(t, true, ok)
+	assert.Equal(t, 1, value)
+
+	time.Sleep(4 * time.Second) // wait for the refresh loop to run
+
+	value, ok = cache.Get("key")
+	assert.Equal(t, true, ok)
+	assert.Equal(t, 2, value)
+
+	time.Sleep(4 * time.Second)
+	value, ok = cache.Get("key")
+	assert.Equal(t, true, ok)
+	assert.Equal(t, 3, value)
+
 }
 
 type MockRandGenerator struct {
