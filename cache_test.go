@@ -143,6 +143,39 @@ func TestCacheBackgroundRefresh(t *testing.T) {
 
 }
 
+func TestCacheBackgroundRefreshForNilData(t *testing.T) {
+	count := 0
+	cache := New(Config{
+		Capacity:        1,
+		RefreshInterval: 3 * time.Second,
+		OnRefresh: func() map[interface{}]interface{} {
+			count++
+
+			if count == 2 {
+				return nil
+			}
+			return map[interface{}]interface{}{"key": count}
+		},
+	})
+
+	value, ok := cache.Get("key")
+	assert.Equal(t, true, ok)
+	assert.Equal(t, 1, value)
+
+	time.Sleep(4 * time.Second)
+
+	// Prevent refresh when the OnRefresh call back returns nil
+	value, ok = cache.Get("key")
+	assert.Equal(t, true, ok)
+	assert.Equal(t, 1, value)
+
+	time.Sleep(4 * time.Second)
+	value, ok = cache.Get("key")
+	assert.Equal(t, true, ok)
+	assert.Equal(t, 3, value)
+
+}
+
 type MockRandGenerator struct {
 	startAt int64
 	incr    int64

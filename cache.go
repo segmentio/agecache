@@ -183,7 +183,11 @@ func New(config Config) *Cache {
 			defer t.Stop()
 			for {
 				<-t.C
-				cache.RefreshCache(config.OnRefresh())
+				items := config.OnRefresh()
+				// Only refresh the cache if the items provided is not nil
+				if items != nil {
+					cache.RefreshCache(items)
+				}
 			}
 		}()
 	}
