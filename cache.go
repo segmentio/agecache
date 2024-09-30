@@ -13,10 +13,9 @@ import (
 //
 // The struct supports stats package tags, example:
 //
-// 		prev := cache.Stats()
-// 		s := cache.Stats().Delta(prev)
-// 		stats.WithPrefix("mycache").Observe(s)
-//
+//	prev := cache.Stats()
+//	s := cache.Stats().Delta(prev)
+//	stats.WithPrefix("mycache").Observe(s)
 type Stats struct {
 	Capacity  int64 `metric:"capacity" type:"gauge"`    // Gauge, maximum capacity for the cache
 	Count     int64 `metric:"count" type:"gauge"`       // Gauge, number of items in the cache
@@ -80,6 +79,12 @@ type Config struct {
 	OnEviction func(key, value interface{})
 	// Optional callback invoked when an item expired
 	OnExpiration func(key, value interface{})
+	// Optional refresh interval after which all items in the cache expires.
+	// If zero, refreshing cache is disabled.
+	RefreshInterval time.Duration
+	// Optional on refresh callback invoked when the cache is refreshed
+	// Both RefreshInterval and OnRefresh must be provided to enable background cache refresh
+	OnRefresh func() map[interface{}]interface{}
 }
 
 // Entry pointed to by each list.Element
@@ -134,6 +139,10 @@ func New(config Config) *Cache {
 		panic("config.MinAge must be less than or equal to config.MaxAge")
 	}
 
+	if config.RefreshInterval < 0 {
+		panic("Must supply a zero or positive config.RefreshInterval")
+	}
+
 	minAge := config.MinAge
 	if minAge == 0 {
 		minAge = config.MaxAge
@@ -163,6 +172,22 @@ func New(config Config) *Cache {
 		go func() {
 			for range time.Tick(interval) {
 				cache.deleteExpired()
+			}
+		}()
+	}
+
+	if config.RefreshInterval > 0 && config.OnRefresh != nil {
+		cache.RefreshCache(config.OnRefresh())
+		go func() {
+			t := time.NewTicker(config.RefreshInterval)
+			defer t.Stop()
+			for {
+				<-t.C
+				items := config.OnRefresh()
+				// Only refresh the cache if the items provided is not nil
+				if items != nil {
+					cache.RefreshCache(items)
+				}
 			}
 		}()
 	}
@@ -226,6 +251,36 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 
 	cache.misses++
 	return nil, false
+}
+
+// RefreshCache refreshes the entire cache with the new items map
+func (cache *Cache) RefreshCache(items map[interface{}]interface{}) {
+	cache.mutex.Lock()
+	defer cache.mutex.Unlock()
+
+	cache.items = make(map[interface{}]*list.Element)
+	cache.evictionList.Init()
+
+	for key, value := range items {
+		cache.sets++
+		timestamp := cache.getTimestamp()
+
+		if element, ok := cache.items[key]; ok {
+			cache.evictionList.MoveToFront(element)
+			entry := element.Value.(*cacheEntry)
+			entry.value = value
+			entry.timestamp = timestamp
+		}
+
+		entry := &cacheEntry{key, value, timestamp}
+		element := cache.evictionList.PushFront(entry)
+		cache.items[key] = element
+
+		evict := cache.evictionList.Len() > cache.capacity
+		if evict {
+			cache.evictOldest()
+		}
+	}
 }
 
 // Has returns whether or not the `key` is in the cache without updating
