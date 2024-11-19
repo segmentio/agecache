@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -107,9 +108,9 @@ type Cache struct {
 
 	// Cache statistics
 	sets      int64
-	gets      int64
+	gets      atomic.Int64
 	hits      int64
-	misses    int64
+	misses    atomic.Int64
 	evictions int64
 
 	items        map[interface{}]*list.Element
@@ -227,13 +228,17 @@ func (cache *Cache) Set(key, value interface{}) bool {
 // not the value was found. The OnExpiration callback is invoked if the value
 // had expired on access
 func (cache *Cache) Get(key interface{}) (interface{}, bool) {
-	cache.mutex.Lock()
-	defer cache.mutex.Unlock()
 
-	cache.gets++
-
-	if element, ok := cache.items[key]; ok {
+	cache.gets.Add(1)
+	cache.mutex.RLock()
+	element, ok := cache.items[key]
+	cache.mutex.RUnlock()
+	if ok {
 		entry := element.Value.(*cacheEntry)
+
+		cache.mutex.Lock()
+		defer cache.mutex.Unlock()
+
 		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
 			cache.evictionList.MoveToFront(element)
 			cache.hits++
@@ -242,14 +247,14 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 
 		// Entry expired
 		cache.deleteElement(element)
-		cache.misses++
+		cache.misses.Add(1)
 		if cache.onExpiration != nil {
 			cache.onExpiration(entry.key, entry.value)
 		}
 		return nil, false
 	}
 
-	cache.misses++
+	cache.misses.Add(1)
 	return nil, false
 }
 
@@ -447,9 +452,9 @@ func (cache *Cache) Stats() Stats {
 		Capacity:  int64(cache.capacity),
 		Count:     int64(cache.evictionList.Len()),
 		Sets:      cache.sets,
-		Gets:      cache.gets,
+		Gets:      cache.gets.Load(),
 		Hits:      cache.hits,
-		Misses:    cache.misses,
+		Misses:    cache.misses.Load(),
 		Evictions: cache.evictions,
 	}
 }

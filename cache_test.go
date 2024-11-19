@@ -2,6 +2,7 @@ package agecache
 
 import (
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -559,13 +560,35 @@ func TestStats(t *testing.T) {
 	})
 }
 
-func BenchmarkCache(b *testing.B) {
+func BenchmarkCache_EvenTraffic(b *testing.B) {
 	cache := New(Config{Capacity: 100, MaxAge: time.Second})
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			cache.Set("a", "b")
 			cache.Get("a")
+		}
+	})
+}
+
+func BenchmarkCache_OnlyHits(b *testing.B) {
+	cache := New(Config{Capacity: 100, MaxAge: time.Second})
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cache.Get("a")
+		}
+	})
+}
+
+func BenchmarkCache_NeverHits(b *testing.B) {
+	cache := New(Config{Capacity: 100, MaxAge: time.Second})
+	k := atomic.Int64{}
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			k.Add(1)
+			cache.Get(k)
 		}
 	})
 }
