@@ -85,6 +85,8 @@ type Config struct {
 	// Optional on refresh callback invoked when the cache is refreshed
 	// Both RefreshInterval and OnRefresh must be provided to enable background cache refresh
 	OnRefresh func() map[interface{}]interface{}
+	// Optional on miss callback invoked when get cache is missing
+	OnMiss func(key interface{})
 }
 
 // Entry pointed to by each list.Element
@@ -104,6 +106,7 @@ type Cache struct {
 	expirationInterval time.Duration
 	onEviction         func(key, value interface{})
 	onExpiration       func(key, value interface{})
+	onMiss             func(key interface{})
 
 	// Cache statistics
 	sets      int64
@@ -196,7 +199,7 @@ func New(config Config) *Cache {
 }
 
 // Set updates a key:value pair in the cache. Returns true if an eviction
-// occurrred, and subsequently invokes the OnEviction callback.
+// occurred, and subsequently invokes the OnEviction callback.
 func (cache *Cache) Set(key, value interface{}) bool {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
@@ -242,14 +245,15 @@ func (cache *Cache) Get(key interface{}) (interface{}, bool) {
 
 		// Entry expired
 		cache.deleteElement(element)
-		cache.misses++
 		if cache.onExpiration != nil {
 			cache.onExpiration(entry.key, entry.value)
 		}
-		return nil, false
 	}
 
 	cache.misses++
+	if cache.onMiss != nil {
+		cache.onMiss(key)
+	}
 	return nil, false
 }
 
