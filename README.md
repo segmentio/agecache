@@ -29,3 +29,19 @@ cache.Set("foo", "bar")
 Full docs are available on [Godoc][godoc].
 
 [godoc]: https://godoc.org/github.com/segmentio/agecache
+
+## LRU Sampling (advanced)
+
+`agecache` supports reducing lock contention on hot `Get` paths by sampling
+how often LRU positions are updated.
+
+- Configure with `Config.LRUSamplingRate` in the range `[0.0, 1.0]`.
+  - `0.0` or the zero value behaves like `1.0` (traditional LRU update on every `Get`).
+  - Lower values (e.g., `0.2`–`0.25`) can significantly improve throughput under high concurrency, at the cost of approximate LRU ordering.
+- To keep stats inexpensive but useful, you can enable `Config.SampleStats`.
+  - When `SampleStats` is `true`, stats counters (Gets/Hits/Misses) are updated only when an LRU update would happen, and are scaled by approximately `1/LRUSamplingRate` so they estimate the unsampled totals.
+  - When `SampleStats` is `false` (default), stats are exact but may add contention in very hot paths.
+
+Notes:
+- Sampling changes eviction accuracy. For many workloads a rate around `0.2–0.25` is a good starting point; benchmark for your use case.
+- With `SampleStats: true`, values are estimates and may vary slightly; with `false`, they are exact.

@@ -4,8 +4,10 @@ package agecache
 import (
 	"container/list"
 	"errors"
+	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -85,6 +87,14 @@ type Config struct {
 	// Optional on refresh callback invoked when the cache is refreshed
 	// Both RefreshInterval and OnRefresh must be provided to enable background cache refresh
 	OnRefresh func() map[interface{}]interface{}
+	// LRUSamplingRate controls how often LRU position updates occur on Get().
+	// Valid range: 0.0-1.0. Default: 1.0 (traditional LRU behavior).
+	// Lower values reduce lock contention but may affect eviction accuracy.
+	LRUSamplingRate float64
+	// SampleStats, when true, updates Gets/Hits/Misses using the same
+	// sampling decision as LRUSamplingRate. When false (default), stats
+	// counters are exact at the cost of additional atomic operations.
+	SampleStats bool
 }
 
 // Entry pointed to by each list.Element
@@ -104,8 +114,10 @@ type Cache struct {
 	expirationInterval time.Duration
 	onEviction         func(key, value interface{})
 	onExpiration       func(key, value interface{})
+	lruSamplingRate    float64
+	sampleStats        bool
 
-	// Cache statistics
+	// Cache statistics (atomic)
 	sets      int64
 	gets      int64
 	hits      int64
@@ -143,6 +155,10 @@ func New(config Config) *Cache {
 		panic("Must supply a zero or positive config.RefreshInterval")
 	}
 
+	if config.LRUSamplingRate < 0 || config.LRUSamplingRate > 1.0 {
+		panic("Must supply a config.LRUSamplingRate between 0.0 and 1.0")
+	}
+
 	minAge := config.MinAge
 	if minAge == 0 {
 		minAge = config.MaxAge
@@ -155,6 +171,11 @@ func New(config Config) *Cache {
 
 	seed := rand.NewSource(time.Now().UnixNano())
 
+	samplingRate := config.LRUSamplingRate
+	if samplingRate == 0 {
+		samplingRate = 1.0
+	}
+
 	cache := &Cache{
 		capacity:           config.Capacity,
 		maxAge:             config.MaxAge,
@@ -163,10 +184,14 @@ func New(config Config) *Cache {
 		expirationInterval: interval,
 		onEviction:         config.OnEviction,
 		onExpiration:       config.OnExpiration,
+		lruSamplingRate:    samplingRate,
+		sampleStats:        config.SampleStats,
 		items:              make(map[interface{}]*list.Element),
 		evictionList:       list.New(),
 		rand:               rand.New(seed),
 	}
+
+	// No additional RNG state required for sampling decision
 
 	if config.ExpirationType == ActiveExpiration && interval > 0 {
 		go func() {
@@ -201,7 +226,7 @@ func (cache *Cache) Set(key, value interface{}) bool {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
-	cache.sets++
+	atomic.AddInt64(&cache.sets, 1)
 	timestamp := cache.getTimestamp()
 
 	if element, ok := cache.items[key]; ok {
@@ -227,30 +252,107 @@ func (cache *Cache) Set(key, value interface{}) bool {
 // not the value was found. The OnExpiration callback is invoked if the value
 // had expired on access
 func (cache *Cache) Get(key interface{}) (interface{}, bool) {
+	shouldSample := cache.lruSamplingRate == 1.0 || rand.Float64() < cache.lruSamplingRate
+
+	if shouldSample {
+		return cache.getWithLRUUpdate(key, shouldSample)
+	}
+	return cache.getReadOnly(key, shouldSample)
+}
+
+// getWithLRUUpdate performs a Get operation with LRU position update (traditional behavior).
+func (cache *Cache) getWithLRUUpdate(key interface{}, shouldSample bool) (interface{}, bool) {
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 
-	cache.gets++
+	w := cache.statsWeight(shouldSample)
+	if w != 0 {
+		atomic.AddInt64(&cache.gets, w)
+	}
 
 	if element, ok := cache.items[key]; ok {
 		entry := element.Value.(*cacheEntry)
 		if cache.maxAge == 0 || time.Since(entry.timestamp) <= cache.maxAge {
 			cache.evictionList.MoveToFront(element)
-			cache.hits++
+			if w != 0 {
+				atomic.AddInt64(&cache.hits, w)
+			}
 			return entry.value, true
 		}
 
 		// Entry expired
 		cache.deleteElement(element)
-		cache.misses++
+		if w != 0 {
+			atomic.AddInt64(&cache.misses, w)
+		}
 		if cache.onExpiration != nil {
 			cache.onExpiration(entry.key, entry.value)
 		}
 		return nil, false
 	}
 
-	cache.misses++
+	if w != 0 {
+		atomic.AddInt64(&cache.misses, w)
+	}
 	return nil, false
+}
+
+// getReadOnly performs a Get operation without LRU position update (fast read-only path).
+func (cache *Cache) getReadOnly(key interface{}, shouldSample bool) (interface{}, bool) {
+	cache.mutex.RLock()
+	defer cache.mutex.RUnlock()
+
+	w := cache.statsWeight(shouldSample)
+	if w != 0 {
+		atomic.AddInt64(&cache.gets, w)
+	}
+
+	element, exists := cache.items[key]
+	if !exists {
+		if w != 0 {
+			atomic.AddInt64(&cache.misses, w)
+		}
+		return nil, false
+	}
+
+	entry := element.Value.(*cacheEntry)
+	if cache.maxAge > 0 && time.Since(entry.timestamp) > cache.maxAge {
+		// Expired - just return miss, don't delete (bounded by capacity)
+		if w != 0 {
+			atomic.AddInt64(&cache.misses, w)
+		}
+		return nil, false
+	}
+
+	if w != 0 {
+		atomic.AddInt64(&cache.hits, w)
+	}
+	return entry.value, true
+}
+
+// statsWeight returns the integer weight to add to stats counters for a single
+// Get event, based on sampling configuration and the event's sampling decision.
+//   - When SampleStats is disabled, always returns 1.
+//   - When SampleStats is enabled and the event was not sampled, returns 0.
+//   - When SampleStats is enabled and the event was sampled, returns
+//     round(1 / LRUSamplingRate) to approximate the unsampled totals.
+func (cache *Cache) statsWeight(shouldSample bool) int64 {
+	if !cache.sampleStats {
+		return 1
+	}
+	if !shouldSample {
+		return 0
+	}
+	p := cache.lruSamplingRate
+	if p <= 0 {
+		// Should not happen because zero defaults to 1.0, but be defensive.
+		return 1
+	}
+	w := int64(math.Round(1.0 / p))
+	if w < 1 {
+		w = 1
+	}
+	return w
 }
 
 // RefreshCache refreshes the entire cache with the new items map
@@ -262,7 +364,7 @@ func (cache *Cache) RefreshCache(items map[interface{}]interface{}) {
 	cache.evictionList.Init()
 
 	for key, value := range items {
-		cache.sets++
+		atomic.AddInt64(&cache.sets, 1)
 		timestamp := cache.getTimestamp()
 
 		if element, ok := cache.items[key]; ok {
@@ -446,11 +548,11 @@ func (cache *Cache) Stats() Stats {
 	return Stats{
 		Capacity:  int64(cache.capacity),
 		Count:     int64(cache.evictionList.Len()),
-		Sets:      cache.sets,
-		Gets:      cache.gets,
-		Hits:      cache.hits,
-		Misses:    cache.misses,
-		Evictions: cache.evictions,
+		Sets:      atomic.LoadInt64(&cache.sets),
+		Gets:      atomic.LoadInt64(&cache.gets),
+		Hits:      atomic.LoadInt64(&cache.hits),
+		Misses:    atomic.LoadInt64(&cache.misses),
+		Evictions: atomic.LoadInt64(&cache.evictions),
 	}
 }
 
@@ -502,7 +604,7 @@ func (cache *Cache) evictOldest() bool {
 		return false
 	}
 
-	cache.evictions++
+	atomic.AddInt64(&cache.evictions, 1)
 	entry := cache.deleteElement(element)
 	if cache.onEviction != nil {
 		cache.onEviction(entry.key, entry.value)

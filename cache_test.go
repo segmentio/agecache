@@ -1,7 +1,10 @@
 package agecache
 
 import (
+	"fmt"
+	"math/rand"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -568,4 +571,216 @@ func BenchmarkCache(b *testing.B) {
 			cache.Get("a")
 		}
 	})
+}
+
+// LRU Sampling Tests
+
+func TestInvalidLRUSamplingRate(t *testing.T) {
+	assert.Panics(t, func() {
+		New(Config{Capacity: 1, LRUSamplingRate: -0.1})
+	})
+
+	assert.Panics(t, func() {
+		New(Config{Capacity: 1, LRUSamplingRate: 1.1})
+	})
+}
+
+func TestDefaultLRUSamplingBehaviorUnchanged(t *testing.T) {
+	// Test that default (zero value) config behaves identically to 100% sampling
+	defaultCache := New(Config{Capacity: 3})
+	explicitCache := New(Config{Capacity: 3, LRUSamplingRate: 1.0})
+
+	keys := []string{"a", "b", "c", "d"}
+
+	// Fill both caches identically
+	for _, key := range keys[:3] {
+		defaultCache.Set(key, key+"_value")
+		explicitCache.Set(key, key+"_value")
+	}
+
+	// Access items in same pattern
+	for i := 0; i < 10; i++ {
+		defaultCache.Get("a")
+		explicitCache.Get("a")
+		defaultCache.Get("b")
+		explicitCache.Get("b")
+	}
+
+	// Add new item to trigger eviction
+	defaultCache.Set("d", "d_value")
+	explicitCache.Set("d", "d_value")
+
+	// Both should evict "c" (least recently used)
+	_, foundInDefault := defaultCache.Get("c")
+	_, foundInExplicit := explicitCache.Get("c")
+
+	assert.False(t, foundInDefault)
+	assert.False(t, foundInExplicit)
+
+	// Both should still have "a", "b", "d"
+	for _, key := range []string{"a", "b", "d"} {
+		_, foundInDefault := defaultCache.Get(key)
+		_, foundInExplicit := explicitCache.Get(key)
+		assert.True(t, foundInDefault)
+		assert.True(t, foundInExplicit)
+	}
+}
+
+func TestLRUSamplingFunctionality(t *testing.T) {
+	// Test basic functionality with various sampling rates
+	testCases := []float64{1.0, 0.5, 0.1}
+
+	for _, samplingRate := range testCases {
+		t.Run(fmt.Sprintf("sampling_%.1f", samplingRate), func(t *testing.T) {
+			cache := New(Config{Capacity: 10, LRUSamplingRate: samplingRate})
+
+			// Basic set/get should work regardless of sampling rate
+			cache.Set("key1", "value1")
+			cache.Set("key2", "value2")
+
+			value, found := cache.Get("key1")
+			assert.True(t, found)
+			assert.Equal(t, "value1", value)
+
+			// Stats should still be accurate
+			stats := cache.Stats()
+			assert.Equal(t, int64(2), stats.Sets)
+			assert.Equal(t, int64(1), stats.Gets)
+			assert.Equal(t, int64(1), stats.Hits)
+		})
+	}
+}
+
+func TestSamplingWithExpiration(t *testing.T) {
+	// Test that expired item handling works correctly with sampling
+	cache := New(Config{Capacity: 10, MaxAge: 50 * time.Millisecond, LRUSamplingRate: 0.1})
+
+	cache.Set("key1", "value1")
+
+	// Wait for expiration
+	time.Sleep(100 * time.Millisecond)
+
+	// Should return miss for expired items regardless of sampling path
+	value, found := cache.Get("key1")
+	assert.False(t, found)
+	assert.Nil(t, value)
+}
+
+func TestConcurrentGetConsistency(t *testing.T) {
+	// Test that concurrent gets with sampling don't cause race conditions
+	cache := New(Config{Capacity: 100, LRUSamplingRate: 0.5})
+
+	// Fill cache
+	for i := 0; i < 50; i++ {
+		cache.Set(i, i*10)
+	}
+
+	var wg sync.WaitGroup
+	numGoroutines := 10
+	getsPerGoroutine := 50
+
+	// Run concurrent gets
+	for g := 0; g < numGoroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < getsPerGoroutine; i++ {
+				key := i % 50
+				value, found := cache.Get(key)
+				if found {
+					assert.Equal(t, key*10, value)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+func BenchmarkGetConcurrency(b *testing.B) {
+	testCases := []struct {
+		name         string
+		samplingRate float64
+	}{
+		{"Traditional_100pct", 1.0},
+		{"Sampling_10pct", 0.1},
+		{"Sampling_1pct", 0.01},
+	}
+
+	for _, tc := range testCases {
+		b.Run(tc.name, func(b *testing.B) {
+			cache := New(Config{Capacity: 1000, LRUSamplingRate: tc.samplingRate, SampleStats: true})
+
+			// Pre-fill cache
+			for i := 0; i < 500; i++ {
+				cache.Set(i, i*10)
+			}
+
+			b.ResetTimer()
+			// Use per-goroutine RNG and precomputed keys to avoid time.Now() inside hot loop
+			const keySpace = 500
+			const ringSize = 1024 // power-of-two for efficient wrap
+			const mask = ringSize - 1
+
+			b.RunParallel(func(pb *testing.PB) {
+				r := rand.New(rand.NewSource(time.Now().UnixNano()))
+				keys := make([]int, ringSize)
+				for i := range keys {
+					keys[i] = r.Intn(keySpace)
+				}
+				idx := 0
+				for pb.Next() {
+					key := keys[idx&mask]
+					cache.Get(key)
+					idx++
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkGetSamplingSweep measures Get throughput across a range of
+// LRUSamplingRate values to find the performance sweet spot.
+func BenchmarkGetSamplingSweep(b *testing.B) {
+	rates := []float64{
+		1.0,
+		0.75, 0.5,
+		0.33, 0.25, 0.2,
+		0.15, 0.125, 0.1,
+		0.08, 0.06, 0.05,
+		0.04, 0.03, 0.02,
+		0.015, 0.01, 0.0075, 0.005,
+	}
+
+	for _, rate := range rates {
+		b.Run(fmt.Sprintf("rate_%g", rate), func(b *testing.B) {
+			cache := New(Config{Capacity: 1000, LRUSamplingRate: rate, SampleStats: true})
+
+			// Pre-fill cache
+			const keySpace = 500
+			for i := 0; i < keySpace; i++ {
+				cache.Set(i, i*10)
+			}
+
+			b.ResetTimer()
+
+			// Per-goroutine RNG and precomputed keys to avoid time.Now() in hot loop
+			const ringSize = 1024
+			const mask = ringSize - 1
+
+			b.RunParallel(func(pb *testing.PB) {
+				r := rand.New(rand.NewSource(time.Now().UnixNano()))
+				keys := make([]int, ringSize)
+				for i := range keys {
+					keys[i] = r.Intn(keySpace)
+				}
+				idx := 0
+				for pb.Next() {
+					key := keys[idx&mask]
+					cache.Get(key)
+					idx++
+				}
+			})
+		})
+	}
 }
